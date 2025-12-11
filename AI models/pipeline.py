@@ -2,7 +2,6 @@ from face_detector import FaceDetector
 from face_recognizer import FaceRecognizer
 from database import EmbeddingDB
 from utils import read_image_bytes
-
 import numpy as np
 
 class FacePipeline:
@@ -43,6 +42,7 @@ class FacePipeline:
 
         # Step 2: Get embedding
         embedding = face.normed_embedding
+        embedding_list = embedding.tolist()
 
         # Step 3: Match with database
         name, score = self.recognizer.match(embedding)
@@ -58,11 +58,12 @@ class FacePipeline:
 
         # If recognized
         if name is not None:
-            return {
+           return {
                 "face_found": True,
                 "recognized": True,
                 "name": name,
-                "confidence": round(1 - score, 3)
+                "confidence": round(1 - score, 3),
+                "embedding": embedding_list
             }
 
         # Unknown face

@@ -98,3 +98,23 @@ exports.getUserByEmail = (req, res) => {
     res.json(user);
   });
 };
+
+exports.getAllUsers = (req, res) => {
+  const sql = "SELECT id, name, email, face_embedding FROM users";
+
+  db.query(sql, (err, rows) => {
+    if (err) return res.status(500).json({ error: err });
+
+    const users = rows.map((u) => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      face_embedding: JSON.parse(u.face_embedding || "[]"),
+    }));
+
+    res.json({
+      success: true,
+      users,
+    });
+  });
+};

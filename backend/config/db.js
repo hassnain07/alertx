@@ -7,9 +7,7 @@ const db = mysql.createConnection({
   database: "alertx",
 });
 
-db.connect((err) => {
-  if (err) throw err;
-  console.log("Connected to DB");
-});
+// Convert DB to promise-based version
+const promiseDB = db.promise();
 
-module.exports = db;
+module.exports = promiseDB;
