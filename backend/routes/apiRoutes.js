@@ -7,7 +7,12 @@ const authController = require("../controllers/authController");
 router.post("/api/register", authController.registerUser);
 router.post("/api/login", authController.loginUser);
 
-router.post("/api/esp32/upload", upload.single("image"), saveEsp32Image);
+router.post("/api/esp32/upload", (req, res) => {
+  console.log("ESP32 image received");
+  console.log("Size:", req.body.length);
+
+  res.status(200).send("OK");
+});
 router.get("/api/all", authController.getAllUsers);
 router.post("/api/approve", (req, res) => {
   const { id } = req.body;

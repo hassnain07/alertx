@@ -1,44 +1,74 @@
 const express = require("express");
-const http = require("http");
-const bodyParser = require("body-parser");
-const cors = require("cors");
-const { Server } = require("socket.io");
-const axios = require("axios"); // to send command to NodeMCU door lock
+const fs = require("fs");
+const path = require("path");
+const { spawn } = require("child_process");
 
 const app = express();
-const server = http.createServer(app);
+const PORT = 3000;
 
-// CORS
-app.use(
-  cors({
-    origin: "http://localhost:5173",
-    methods: "GET,POST,PUT,DELETE",
-    allowedHeaders: "Content-Type, Authorization",
-  })
+const pythonScript = path.join(
+  __dirname,
+  "..",
+  "AI models",
+  "image_to_embedding.py"
 );
 
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-  },
+// Accept raw binary data up to 10 MB
+app.use(express.raw({ type: "application/octet-stream", limit: "20mb" }));
+app.get("/test", (req, res) => {
+  res.status(200).send("test");
 });
 
-io.on("connection", (socket) => {
-  console.log("Dashboard connected");
-});
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.post(
+  "/upload",
+  express.raw({ type: "image/jpeg", limit: "5mb" }),
+  (req, res) => {
+    try {
+      console.log("Image received:", req.body.length, "bytes");
 
-// Serve public files
-app.use(express.static("public"));
+      // Convert image buffer → base64
+      const base64Image = req.body.toString("base64");
 
-// ⬅️ MOUNT YOUR ROUTES HERE
-const authRoutes = require("./routes/apiRoutes");
-app.use(authRoutes);
+      // Spawn Python process
+      const python = spawn(
+        "D:/real-time-alert/AI models/venv/Scripts/python.exe", // <-- venv python
+        ["D:/real-time-alert/AI models/image_to_embedding.py"] // <-- full path to script
+      ); // Send JSON to Python via stdin
+      python.stdin.write(JSON.stringify({ image: base64Image }));
+      python.stdin.end();
 
-global.io = io; // ⬅ so we can use io inside controllers
+      let output = "";
+      let error = "";
+
+      // Receive embedding from Python
+      python.stdout.on("data", (data) => {
+        output += data.toString();
+      });
+
+      python.stderr.on("data", (data) => {
+        error += data.toString();
+      });
+
+      python.on("close", (code) => {
+        if (code !== 0 || error) {
+          console.error("Python error:", error);
+          return res.status(500).json({ success: false, error });
+        }
+
+        const result = JSON.parse(output);
+
+        console.log("Embedding length:", result.embedding?.length);
+
+        return res.json(result);
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ success: false });
+    }
+  }
+);
 
 // Start server
-server.listen(3000, () => {
-  console.log("Server running on http://localhost:3000");
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server running on http://localhost:${PORT}`);
 });

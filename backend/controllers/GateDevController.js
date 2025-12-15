@@ -25,7 +25,6 @@ exports.saveEsp32Image = async (req, res) => {
 
     return res.json({
       success: true,
-      message: "Image uploaded + event stored",
     });
   } catch (error) {
     console.error(error);
