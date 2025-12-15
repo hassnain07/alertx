@@ -1,0 +1,266 @@
+#include "Arduino.h"
+#include "WiFi.h"
+#include "esp_camera.h"
+#include <HTTPClient.h>
+
+/* ---------------- PINS ---------------- */
+#define TRIG_PIN    12
+#define ECHO_PIN    13
+#define BUZZER_PIN  15
+#define LOCK_PIN 16   // Door lock relay / solenoid
+#define LED_FLASH   4
+#define MAX_UPLOAD_RETRIES 10
+#define RETRY_DELAY_MS    800
+/* ---------------- WIFI ---------------- */
+const char* ssid     = ":)";
+const char* password = "wardah1234";
+
+/* ---------------- SERVER ---------------- */
+const char* SERVER_HOST = "10.127.68.7";
+const uint16_t SERVER_PORT = 3000;
+const char* uploadUrl =
+  "http://10.127.68.7:3000/upload";
+
+/* -------- ESP32-CAM AI THINKER PINS -------- */
+#define PWDN_GPIO_NUM     32
+#define RESET_GPIO_NUM    -1
+#define XCLK_GPIO_NUM      0
+#define SIOD_GPIO_NUM     26
+#define SIOC_GPIO_NUM     27
+#define Y9_GPIO_NUM       35
+#define Y8_GPIO_NUM       34
+#define Y7_GPIO_NUM       39
+#define Y6_GPIO_NUM       36
+#define Y5_GPIO_NUM       21
+#define Y4_GPIO_NUM       19
+#define Y3_GPIO_NUM       18
+#define Y2_GPIO_NUM        5
+#define VSYNC_GPIO_NUM    25
+#define HREF_GPIO_NUM     23
+#define PCLK_GPIO_NUM     22
+
+/* ---------------- VARIABLES ---------------- */
+bool objectDetected = false;
+
+/* ---------------- DISTANCE ---------------- */
+float getDistance() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  long duration = pulseIn(ECHO_PIN, HIGH, 25000);
+  if (duration == 0) return -1;
+  return duration * 0.034 / 2;
+}
+
+void openLock() {
+  Serial.println("🔓 Door UNLOCKED");
+  digitalWrite(LOCK_PIN, HIGH);   // change to LOW if your relay is active-LOW
+}
+
+void closeLock() {
+  Serial.println("🔒 Door LOCKED");
+  digitalWrite(LOCK_PIN, LOW);    // change to HIGH if your relay is active-LOW
+}
+
+void waitForTCP() {
+  Serial.print("Waiting for TCP");
+
+  WiFiClient testClient;
+
+  while (!testClient.connect(SERVER_HOST, SERVER_PORT)) {
+    Serial.print(".");
+    delay(500);
+  }
+
+  testClient.stop();
+  Serial.println("\nTCP ready");
+}
+
+
+void printWiFiDebug() {
+  Serial.println("---- WiFi Debug ----");
+
+  wl_status_t status = WiFi.status();
+  Serial.print("WiFi status: ");
+  switch (status) {
+    case WL_CONNECTED: Serial.println("CONNECTED"); break;
+    case WL_NO_SSID_AVAIL: Serial.println("NO SSID"); break;
+    case WL_CONNECT_FAILED: Serial.println("CONNECT FAILED"); break;
+    case WL_CONNECTION_LOST: Serial.println("CONNECTION LOST"); break;
+    case WL_DISCONNECTED: Serial.println("DISCONNECTED"); break;
+    default: Serial.println("UNKNOWN"); break;
+  }
+
+  Serial.print("Local IP: ");
+  Serial.println(WiFi.localIP());
+
+  Serial.print("Gateway IP: ");
+  Serial.println(WiFi.gatewayIP());
+
+  Serial.print("RSSI (signal): ");
+  Serial.print(WiFi.RSSI());
+  Serial.println(" dBm");
+
+  Serial.println("--------------------");
+}
+
+/* ---------------- IMAGE UPLOAD ---------------- */
+bool sendImage(uint8_t* imageData, size_t length) {
+  Serial.println("Starting image upload...");
+
+  // TCP already guaranteed in setup()
+  // No need to re-check here
+
+  WiFiClient client;
+  HTTPClient http;
+
+  http.begin(client, uploadUrl);
+  http.addHeader("Content-Type", "application/octet-stream");
+
+  int code = http.POST(imageData, length);
+
+  if (code > 0) {
+    Serial.printf("HTTP Code: %d\n", code);
+    Serial.print("Response: ");
+    Serial.println(http.getString());
+  } else {
+    Serial.printf("POST FAILED (%d)\n", code);
+    Serial.println(http.errorToString(code));
+  }
+
+  http.end();
+  return (code == 200 || code == 201);
+}
+
+bool sendImageWithRetry(uint8_t* imageData, size_t length) {
+  for (int attempt = 1; attempt <= MAX_UPLOAD_RETRIES; attempt++) {
+    Serial.printf("📤 Upload attempt %d / %d\n", attempt, MAX_UPLOAD_RETRIES);
+
+    bool ok = sendImage(imageData, length);
+
+    if (ok) {
+      Serial.println("✅ Upload successful");
+      return true;
+    }
+
+    Serial.println("⏳ Server not ready yet, retrying...");
+    delay(RETRY_DELAY_MS);
+  }
+
+  Serial.println("❌ Upload failed after all retries");
+  return false;
+}
+
+
+/* ---------------- BUZZER ---------------- */
+void beepBuzzer(bool success) {
+  int count = success ? 1 : 3;
+  for (int i = 0; i < count; i++) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(200);
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(200);
+  }
+}
+
+/* ---------------- SETUP ---------------- */
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(LED_FLASH, OUTPUT);
+
+  pinMode(LOCK_PIN, OUTPUT);
+  closeLock();   // keep door locked on boot
+
+  /* WIFI */
+  Serial.print("Connecting to WiFi");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi Connected");
+  Serial.println(WiFi.localIP());
+
+  // 🔑 BLOCK here until server is REALLY ready
+  waitForTCP();
+
+
+  /* CAMERA */
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer   = LEDC_TIMER_0;
+  config.pin_d0       = Y2_GPIO_NUM;
+  config.pin_d1       = Y3_GPIO_NUM;
+  config.pin_d2       = Y4_GPIO_NUM;
+  config.pin_d3       = Y5_GPIO_NUM;
+  config.pin_d4       = Y6_GPIO_NUM;
+  config.pin_d5       = Y7_GPIO_NUM;
+  config.pin_d6       = Y8_GPIO_NUM;
+  config.pin_d7       = Y9_GPIO_NUM;
+  config.pin_xclk     = XCLK_GPIO_NUM;
+  config.pin_pclk     = PCLK_GPIO_NUM;
+  config.pin_vsync    = VSYNC_GPIO_NUM;
+  config.pin_href     = HREF_GPIO_NUM;
+  config.pin_sscb_sda = SIOD_GPIO_NUM;
+  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn     = PWDN_GPIO_NUM;
+  config.pin_reset    = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size   = FRAMESIZE_VGA;
+  config.jpeg_quality = 12;
+  config.fb_count     = 1;
+
+  if (esp_camera_init(&config) != ESP_OK) {
+    Serial.println("Camera init FAILED");
+    ESP.restart();
+  }
+
+  Serial.println("Camera ready");
+}
+
+/* ---------------- LOOP ---------------- */
+void loop() {
+  float distance = getDistance();
+  Serial.printf("Distance: %.2f cm\n", distance);
+
+  if (distance > 0 && distance < 30 && !objectDetected) {
+    objectDetected = true;
+
+    Serial.println("Object detected! Capturing image...");
+    digitalWrite(LED_FLASH, HIGH);
+    delay(200);
+
+    camera_fb_t* fb = esp_camera_fb_get();
+    digitalWrite(LED_FLASH, LOW);
+
+    if (!fb) {
+      Serial.println("Camera capture failed");
+      return;
+    }
+
+    bool ok = sendImageWithRetry(fb->buf, fb->len);
+    esp_camera_fb_return(fb);
+
+    if (ok) {
+      openLock();        // 🔓 open door
+      delay(3000);       // keep door open (3 seconds – adjust if needed)
+      closeLock();       // 🔒 lock again
+    }
+
+    beepBuzzer(ok);
+  }
+
+  if (distance >= 30 || distance < 0) {
+    objectDetected = false;
+  }
+
+  delay(500);
+}
